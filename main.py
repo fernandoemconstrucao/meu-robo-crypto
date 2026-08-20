@@ -12,8 +12,6 @@ PERIODO = 20
 
 exchange = ccxt.bingx()
 
-enviar_mensagem_telegram("Robô de Sinais Ativo na Nuvem! Buscando oportunidades na Solana...")
-
 def enviar_mensagem_telegram(mensagem):
     url = "https://telegram.org" + str(TOKEN) + "/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": mensagem}
@@ -49,6 +47,9 @@ def analisar_mercado():
         msg = "SINAL DE VENDA SOLANA Preco " + str(preco_fechamento)
         enviar_mensagem_telegram(msg)
         print("Sinal de Venda disparado")
+
+# Dispara a mensagem de teste assim que o sistema liga na nuvem
+enviar_mensagem_telegram("Robo de Sinais Ativo na Nuvem! Buscando oportunidades na Solana...")
 
 while True:
     analisar_mercado()
