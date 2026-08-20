@@ -24,7 +24,7 @@ LISTA_DE_MOEDAS = [
 exchange = ccxt.bingx()
 
 def enviar_mensagem_telegram(mensagem):
-    url = f"url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
     {TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": mensagem}
