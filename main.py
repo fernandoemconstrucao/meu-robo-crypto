@@ -18,7 +18,7 @@ def enviar_mensagem_telegram(mensagem):
     requests.post(url, json=payload)
 
 def analisar_mercado():
-    print("Analisando mercado na Binance")
+    print("Analisando mercado na BingX")
     candles = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=100)
     df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
     
@@ -48,7 +48,7 @@ def analisar_mercado():
         enviar_mensagem_telegram(msg)
         print("Sinal de Venda disparado")
 
-# Dispara a mensagem de teste assim que o sistema liga na nuvem
+# Mensagem de teste corrigida
 enviar_mensagem_telegram("Robo de Sinais Ativo na Nuvem! Buscando oportunidades na Solana...")
 
 while True:
