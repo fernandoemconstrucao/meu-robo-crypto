@@ -13,7 +13,7 @@ PERIODO = 20
 exchange = ccxt.bingx()
 
 def enviar_mensagem_telegram(mensagem):
-    url = "https://telegram.org" + str(TOKEN) + "/sendMessage"
+    url = f"https://telegram.org{TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": mensagem}
     requests.post(url, json=payload)
 
@@ -40,15 +40,14 @@ def analisar_mercado():
     volume_confirmado = volume_atual > (volume_medio * 1.5)
     
     if preco_minimo <= suporte and volume_confirmado:
-        msg = "SINAL DE COMPRA SOLANA Preco " + str(preco_fechamento)
+        msg = f"SINAL DE COMPRA SOLANA Preco {preco_fechamento}"
         enviar_mensagem_telegram(msg)
         print("Sinal de Compra disparado")
     elif preco_maximo >= resistencia and volume_confirmado:
-        msg = "SINAL DE VENDA SOLANA Preco " + str(preco_fechamento)
+        msg = f"SINAL DE VENDA SOLANA Preco {preco_fechamento}"
         enviar_mensagem_telegram(msg)
         print("Sinal de Venda disparado")
 
-# Mensagem de teste corrigida
 enviar_mensagem_telegram("Robo de Sinais Ativo na Nuvem! Buscando oportunidades na Solana...")
 
 while True:
