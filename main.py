@@ -13,7 +13,7 @@ PERIODO = 20
 exchange = ccxt.binance()
 def enviar_mensagem_telegram(mensagem):
   url = "telegram.org" + str(TOKEN) + "/sendMessage"
-  payload = {"chat_id": CHAT_ID, "text": message}
+  payload = {"chat_id": CHAT_ID, "text": mensagem}
   try:
     requests.post(url, json=payload)
     except Exception as e:
