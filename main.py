@@ -12,6 +12,8 @@ PERIODO = 20
 
 exchange = ccxt.bingx()
 
+enviar_mensagem_telegram("Robô de Sinais Ativo na Nuvem! Buscando oportunidades na Solana...")
+
 def enviar_mensagem_telegram(mensagem):
     url = "https://telegram.org" + str(TOKEN) + "/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": mensagem}
