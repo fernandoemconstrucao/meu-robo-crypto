@@ -30,7 +30,7 @@ def enviar_mensagem_telegram(mensagem):
 
 def analisar_mercado():
     print("Analisando mercado na BingX")
-    candles = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=100)
+    candles = exchange.fetch_ohlcv(moeda, timeframe=TIMEFRAME, limit=100)
     df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
     
     df["highest_high"] = df["high"].rolling(window=PERIODO).max()
