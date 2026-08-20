@@ -10,7 +10,7 @@ SYMBOL = "SOL/USDT"
 TIMEFRAME = "15m"
 PERIODO = 20
 
-exchange = ccxt.binance()
+exchange = ccxt.bingx()
 
 def enviar_mensagem_telegram(mensagem):
     url = "https://telegram.org" + str(TOKEN) + "/sendMessage"
