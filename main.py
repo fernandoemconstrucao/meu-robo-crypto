@@ -6,9 +6,20 @@ import pandas as pd
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-SYMBOL = "SOL/USDT"
 TIMEFRAME = "15m"
 PERIODO = 20
+
+# Sua nova lista profissional de multi-ativos
+LISTA_DE_MOEDAS = [
+    "SOL/USDT",
+    "BTC/USDT",
+    "ETH/USDT",
+    "XRP/USDT",
+    "DOGE/USDT",
+    "SHIB/USDT",
+    "PEPE/USDT",
+    "BNB/USDT"
+]
 
 exchange = ccxt.bingx()
 
