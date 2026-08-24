@@ -23,6 +23,9 @@ import requests
 import ccxt
 import pandas as pd
 
+import registro
+from formatacao import formatar_preco_dinamico
+
 # =========================================================
 # CONFIGURAÇÃO
 # =========================================================
@@ -67,13 +70,39 @@ log = logging.getLogger("robo_sinais")
 # VALIDAÇÃO DE AMBIENTE
 # =========================================================
 
-if not TOKEN or not CHAT_ID:
-    log.error("TELEGRAM_TOKEN ou TELEGRAM_CHAT_ID não configurados nas variáveis de ambiente do Railway.")
-    raise SystemExit(1)
+def validar_ambiente():
+    """Só é chamado ao rodar o robô de verdade (main), não ao importar
+    este arquivo como módulo (ex: no backtest.py)."""
+    if not TOKEN or not CHAT_ID:
+        log.error("TELEGRAM_TOKEN ou TELEGRAM_CHAT_ID não configurados nas variáveis de ambiente do Railway.")
+        raise SystemExit(1)
+
 
 exchange = ccxt.bingx({
     "enableRateLimit": True,   # evita ban por excesso de requisições
 })
+
+_mercados_carregados = False
+
+
+def formatar_preco(moeda: str, preco: float) -> str:
+    """
+    Formata o preço usando a precisão REAL definida pela própria BingX
+    para aquele par (o mesmo número de casas decimais que ela usa para
+    negociar) — isso resolve o problema de moedas tipo SHIB/PEPE, que
+    têm muitas casas decimais e ficavam cortadas com um formato fixo.
+    Se por algum motivo a exchange não puder ser consultada (ex: rodando
+    o backtest sem essa etapa carregada), cai no cálculo dinâmico local.
+    """
+    global _mercados_carregados
+    try:
+        if not _mercados_carregados:
+            exchange.load_markets()
+            _mercados_carregados = True
+        return exchange.price_to_precision(moeda, preco)
+    except Exception as e:
+        log.warning(f"[{moeda}] Não foi possível usar a precisão da exchange ({e}), usando formatação local.")
+        return formatar_preco_dinamico(preco)
 
 # Guarda o timestamp da última vela que já gerou sinal, por moeda+direção,
 # para não repetir o mesmo sinal em ciclos seguidos.
@@ -166,28 +195,30 @@ def obter_vies_tendencia(moeda: str) -> str:
 # FORMATAÇÃO DO SINAL
 # =========================================================
 
-def montar_mensagem(moeda, direcao, preco, atr, motivo) -> str:
+def calcular_niveis(preco, atr, direcao):
     if direcao == "COMPRA":
         stop = preco - (atr * ATR_STOP_MULT)
         alvo1 = preco + (atr * ATR_ALVO1_MULT)
         alvo2 = preco + (atr * ATR_ALVO2_MULT)
-        emoji = "🟢"
     else:
         stop = preco + (atr * ATR_STOP_MULT)
         alvo1 = preco - (atr * ATR_ALVO1_MULT)
         alvo2 = preco - (atr * ATR_ALVO2_MULT)
-        emoji = "🔴"
+    return stop, alvo1, alvo2
 
+
+def montar_mensagem(moeda, direcao, preco, stop, alvo1, alvo2, motivo) -> str:
+    emoji = "🟢" if direcao == "COMPRA" else "🔴"
     agora = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
 
     return (
         f"{emoji} *SINAL DE {direcao}* {emoji}\n\n"
         f"*Ativo:* {moeda}\n"
         f"*Timeframe:* {TIMEFRAME}\n"
-        f"*Preço de Entrada:* {preco:.6f}\n\n"
-        f"🎯 *Alvo 1:* {alvo1:.6f}\n"
-        f"🎯 *Alvo 2:* {alvo2:.6f}\n"
-        f"🛑 *Stop Loss:* {stop:.6f}\n\n"
+        f"*Preço de Entrada:* {formatar_preco(moeda, preco)}\n\n"
+        f"🎯 *Alvo 1:* {formatar_preco(moeda, alvo1)}\n"
+        f"🎯 *Alvo 2:* {formatar_preco(moeda, alvo2)}\n"
+        f"🛑 *Stop Loss:* {formatar_preco(moeda, stop)}\n\n"
         f"*Motivo:* {motivo}\n"
         f"*Horário:* {agora}\n\n"
         f"⚠️ _Sinal gerado por análise técnica automatizada. Não constitui "
@@ -253,11 +284,16 @@ def analisar_mercado(moeda: str):
         f"+ Tendência {TIMEFRAME_TENDENCIA} alinhada ({vies}) + RSI em {vela['rsi']:.1f}"
     )
 
-    mensagem = montar_mensagem(moeda, direcao, preco_fechamento, vela["atr"], motivo)
+    stop, alvo1, alvo2 = calcular_niveis(preco_fechamento, vela["atr"], direcao)
+    mensagem = montar_mensagem(moeda, direcao, preco_fechamento, stop, alvo1, alvo2, motivo)
 
     if enviar_mensagem_telegram(mensagem):
         ultimo_sinal[f"{moeda}_{direcao}"] = vela_timestamp
-        log.info(f"[{moeda}] Sinal de {direcao} enviado com sucesso.")
+        registro.registrar_sinal(
+            moeda=moeda, direcao=direcao, entrada=preco_fechamento,
+            stop=stop, alvo1=alvo1, alvo2=alvo2, atr=vela["atr"], motivo=motivo,
+        )
+        log.info(f"[{moeda}] Sinal de {direcao} enviado e registrado com sucesso.")
 
 
 # =========================================================
@@ -281,6 +317,7 @@ def segundos_ate_proxima_vela(timeframe: str) -> float:
 # =========================================================
 
 def main():
+    validar_ambiente()
     log.info("Robô de sinais iniciado.")
     enviar_mensagem_telegram("🤖 Robô de sinais *online* e monitorando o mercado.")
 
