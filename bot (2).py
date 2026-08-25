@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 import requests
 import ccxt
 import pandas as pd
+import numpy as np
 
 import registro
 from formatacao import formatar_preco_dinamico
@@ -47,9 +48,21 @@ ATR_ALVO1_MULT = 1.5           # alvo 1 = 1.5x ATR (risco:retorno 1:1)
 ATR_ALVO2_MULT = 3.0           # alvo 2 = 3x ATR (risco:retorno 1:2)
 EMA_TENDENCIA = 50              # EMA usada no timeframe superior p/ definir viés
 
+PERIODO_ADX = 14
+ADX_MINIMO = 20                 # abaixo disso, mercado é considerado "sem tendência"
+                                 # (rompimentos de S/R tendem a ser falsos nesse cenário)
+
+MAX_TRADES_SIMULTANEOS = 3      # limite de sinais em aberto ao mesmo tempo (todos os
+                                 # ativos somados) — protege contra quedas correlacionadas
+                                 # do mercado cripto derrubando vários sinais de uma vez
+
 LISTA_DE_MOEDAS = [
     "SOL/USDT", "BTC/USDT", "ETH/USDT", "XRP/USDT",
-    "DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "BNB/USDT",
+    "DOGE/USDT", "PEPE/USDT", "BNB/USDT",
+    # SHIB/USDT removido em 25/08/2026: backtest de 300 dias mostrou profit
+    # factor de apenas 1,02 (praticamente empatado), e a tentativa de exigir
+    # mais volume pra esse ativo especificamente piorou o resultado (foi pra
+    # 0,83, -6R). Os dados não sustentam manter esse ativo na lista por ora.
 ]
 
 INTERVALO_ENTRE_MOEDAS_SEG = 2   # respiro entre chamadas à API por símbolo
@@ -166,6 +179,42 @@ def calcular_atr(df: pd.DataFrame, periodo: int) -> pd.Series:
     return true_range.rolling(window=periodo).mean()
 
 
+def calcular_adx(df: pd.DataFrame, periodo: int) -> pd.Series:
+    """
+    ADX (Average Directional Index): mede a FORÇA de uma tendência,
+    independente da direção. Valores abaixo de ~20 indicam mercado sem
+    tendência definida (lateral) — nesse cenário, rompimentos de S/R têm
+    muito mais chance de serem falsos (o preço rompe e volta logo depois).
+    """
+    high, low, close = df["high"], df["low"], df["close"]
+
+    variacao_alta = high.diff()
+    variacao_baixa = -low.diff()
+    dm_mais = np.where((variacao_alta > variacao_baixa) & (variacao_alta > 0), variacao_alta, 0.0)
+    dm_menos = np.where((variacao_baixa > variacao_alta) & (variacao_baixa > 0), variacao_baixa, 0.0)
+
+    tr = pd.concat([
+        high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()
+    ], axis=1).max(axis=1)
+
+    atr = tr.rolling(window=periodo).mean()
+    di_mais = 100 * pd.Series(dm_mais, index=df.index).rolling(window=periodo).mean() / atr
+    di_menos = 100 * pd.Series(dm_menos, index=df.index).rolling(window=periodo).mean() / atr
+
+    dx = 100 * (di_mais - di_menos).abs() / (di_mais + di_menos).replace(0, 1e-10)
+    return dx.rolling(window=periodo).mean()
+
+
+def obter_multiplicador_volume(moeda: str) -> float:
+    # Dicionário reservado para ajustes futuros de volume por ativo específico,
+    # caso algum outro par mostre o mesmo padrão de fraqueza que o SHIB mostrou.
+    # Vazio por enquanto: a tentativa de usar isso no SHIB piorou o resultado
+    # (profit factor caiu de 1,02 para 0,83) — o ativo foi removido da lista
+    # em vez de ajustado. Ver LISTA_DE_MOEDAS para o histórico dessa decisão.
+    overrides = {}
+    return overrides.get(moeda, MULTIPLICADOR_VOLUME)
+
+
 def calcular_indicadores(df: pd.DataFrame) -> pd.DataFrame:
     # IMPORTANTE: shift(1) exclui a vela atual do cálculo de S/R e volume médio,
     # senão a vela é comparada consigo mesma (bug da versão anterior).
@@ -174,6 +223,7 @@ def calcular_indicadores(df: pd.DataFrame) -> pd.DataFrame:
     df["volume_medio"] = df["volume"].shift(1).rolling(window=PERIODO_VOLUME).mean()
     df["rsi"] = calcular_rsi(df["close"], PERIODO_RSI)
     df["atr"] = calcular_atr(df, PERIODO_ATR)
+    df["adx"] = calcular_adx(df, PERIODO_ADX)
     return df
 
 
@@ -250,13 +300,15 @@ def analisar_mercado(moeda: str):
     preco_minimo = vela["low"]
     volume_atual = vela["volume"]
 
-    if pd.isna(vela["suporte"]) or pd.isna(vela["volume_medio"]) or pd.isna(vela["atr"]) or pd.isna(vela["rsi"]):
+    if (pd.isna(vela["suporte"]) or pd.isna(vela["volume_medio"]) or pd.isna(vela["atr"])
+            or pd.isna(vela["rsi"]) or pd.isna(vela["adx"])):
         return  # dados insuficientes ainda (início do histórico)
 
-    volume_confirmado = volume_atual > (vela["volume_medio"] * MULTIPLICADOR_VOLUME)
+    volume_confirmado = volume_atual > (vela["volume_medio"] * obter_multiplicador_volume(moeda))
+    tendencia_forte = vela["adx"] > ADX_MINIMO
 
-    sinal_compra = preco_minimo <= vela["suporte"] and volume_confirmado and vela["rsi"] < RSI_SOBRECOMPRA
-    sinal_venda = preco_maximo >= vela["resistencia"] and volume_confirmado and vela["rsi"] > RSI_SOBREVENDA
+    sinal_compra = preco_minimo <= vela["suporte"] and volume_confirmado and vela["rsi"] < RSI_SOBRECOMPRA and tendencia_forte
+    sinal_venda = preco_maximo >= vela["resistencia"] and volume_confirmado and vela["rsi"] > RSI_SOBREVENDA and tendencia_forte
 
     if not (sinal_compra or sinal_venda):
         return
@@ -266,6 +318,16 @@ def analisar_mercado(moeda: str):
 
     if ultimo_sinal.get(f"{moeda}_{direcao}") == vela_timestamp:
         log.info(f"[{moeda}] Sinal de {direcao} já enviado para esta vela, ignorando repetição.")
+        return
+
+    # Limite de risco de portfólio: nunca deixar mais que MAX_TRADES_SIMULTANEOS
+    # sinais em aberto ao mesmo tempo (somando todos os ativos), pra evitar que
+    # uma queda/alta correlacionada do mercado cripto acerte vários de uma vez.
+    sinais_abertos = registro.carregar_sinais()
+    qtd_abertos = (sinais_abertos["status"] == "ABERTO").sum() if not sinais_abertos.empty else 0
+    if qtd_abertos >= MAX_TRADES_SIMULTANEOS:
+        log.info(f"[{moeda}] Sinal ignorado: limite de {MAX_TRADES_SIMULTANEOS} trades "
+                  f"simultâneos já atingido ({qtd_abertos} em aberto).")
         return
 
     # Filtro de confluência: só confirma o sinal se a tendência do timeframe
@@ -280,7 +342,8 @@ def analisar_mercado(moeda: str):
 
     motivo = (
         f"Rompimento de {'suporte' if direcao == 'COMPRA' else 'resistência'} "
-        f"({PERIODO_SR} períodos) + Volume {MULTIPLICADOR_VOLUME}x acima da média "
+        f"({PERIODO_SR} períodos) + Volume {obter_multiplicador_volume(moeda)}x acima da média "
+        f"+ ADX {vela['adx']:.1f} (tendência confirmada) "
         f"+ Tendência {TIMEFRAME_TENDENCIA} alinhada ({vies}) + RSI em {vela['rsi']:.1f}"
     )
 
