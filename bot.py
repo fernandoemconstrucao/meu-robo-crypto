@@ -16,13 +16,20 @@ Correções aplicadas na versão original:
 
 import os
 import time
+import tempfile
 import logging
+from pathlib import Path
 from datetime import datetime, timezone
 
 import requests
 import ccxt
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+import mplfinance as mpf
 
 import registro
 from formatacao import formatar_preco_dinamico
@@ -144,6 +151,30 @@ def enviar_mensagem_telegram(mensagem: str) -> bool:
     return False
 
 
+def enviar_foto_telegram(caminho_imagem: str, legenda: str = "") -> bool:
+    """Envia uma imagem (ex: gráfico de resultado) ao Telegram, com legenda opcional."""
+    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
+
+    for tentativa in range(1, MAX_TENTATIVAS + 1):
+        try:
+            with open(caminho_imagem, "rb") as foto:
+                resp = requests.post(
+                    url,
+                    data={"chat_id": CHAT_ID, "caption": legenda[:1024], "parse_mode": "Markdown"},
+                    files={"photo": foto},
+                    timeout=20,
+                )
+            if resp.status_code == 200:
+                return True
+            log.warning(f"Telegram (foto) respondeu {resp.status_code}: {resp.text}")
+        except (requests.RequestException, OSError) as e:
+            log.warning(f"Tentativa {tentativa}/{MAX_TENTATIVAS} falhou ao enviar foto: {e}")
+        time.sleep(2)
+
+    log.error("Falha definitiva ao enviar imagem para o Telegram.")
+    return False
+
+
 # =========================================================
 # COLETA E INDICADORES
 # =========================================================
@@ -255,6 +286,68 @@ def calcular_niveis(preco, atr, direcao):
         alvo1 = preco - (atr * ATR_ALVO1_MULT)
         alvo2 = preco - (atr * ATR_ALVO2_MULT)
     return stop, alvo1, alvo2
+
+
+def gerar_grafico_sinal(df: pd.DataFrame, indice_sinal: int, moeda: str, direcao: str,
+                         entrada: float, stop: float, alvo1: float, alvo2: float,
+                         suporte: float, resistencia: float) -> str | None:
+    """
+    Gera um gráfico de candles mostrando as últimas ~50 velas até o momento
+    do sinal, com linhas horizontais marcando entrada, stop, alvos e o
+    nível de S/R que foi rompido — dá pra "ver" o contexto de mercado que
+    gerou aquele sinal, não só ler os números.
+    """
+    try:
+        inicio = max(0, indice_sinal - 49)
+        janela = df.iloc[inicio: indice_sinal + 1].copy()
+        if len(janela) < 10:
+            return None
+
+        janela["datetime"] = pd.to_datetime(janela["timestamp"], unit="ms", utc=True)
+        janela = janela.set_index("datetime")
+        janela = janela.rename(columns={
+            "open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume",
+        })
+
+        cores_mercado = mpf.make_marketcolors(
+            up="#4ade80", down="#f87171", edge="inherit", wick="inherit",
+            volume={"up": "#4ade80", "down": "#f87171"},
+        )
+        estilo = mpf.make_mpf_style(
+            base_mpf_style="nightclouds", marketcolors=cores_mercado,
+            gridcolor="#2a2e3d", gridstyle="--", facecolor="#161925",
+            figcolor="#0f1117", edgecolor="#2a2e3d", rc={"font.size": 9},
+        )
+
+        linhas = dict(
+            hlines=[entrada, stop, alvo1, alvo2, suporte, resistencia],
+            colors=["#60a5fa", "#f87171", "#4ade80", "#4ade80", "#9aa0a6", "#9aa0a6"],
+            linestyle=["-", "--", "--", "--", ":", ":"],
+            linewidths=[1.4, 1.2, 1.2, 1.2, 1.0, 1.0],
+        )
+
+        titulo = f"{moeda} · {direcao} · {TIMEFRAME}"
+        fig, axlist = mpf.plot(
+            janela, type="candle", style=estilo, title=titulo, volume=True,
+            hlines=linhas, returnfig=True, figsize=(9, 5.5),
+        )
+
+        legenda = [
+            Line2D([0], [0], color="#60a5fa", linewidth=1.4, label=f"Entrada ({formatar_preco(moeda, entrada)})"),
+            Line2D([0], [0], color="#4ade80", linewidth=1.2, linestyle="--", label="Alvo 1 / Alvo 2"),
+            Line2D([0], [0], color="#f87171", linewidth=1.2, linestyle="--", label=f"Stop ({formatar_preco(moeda, stop)})"),
+            Line2D([0], [0], color="#9aa0a6", linewidth=1.0, linestyle=":", label="Suporte/Resistência"),
+        ]
+        axlist[0].legend(handles=legenda, loc="upper left", facecolor="#1a1d29",
+                         edgecolor="#2a2e3d", labelcolor="#e6e6e6", fontsize=8, framealpha=0.9)
+
+        caminho = Path(tempfile.gettempdir()) / f"sinal_{moeda.replace('/', '')}_{indice_sinal}.png"
+        fig.savefig(caminho, facecolor=fig.get_facecolor(), bbox_inches="tight", dpi=150)
+        plt.close(fig)
+        return str(caminho)
+    except Exception as e:
+        log.warning(f"[{moeda}] Não foi possível gerar o gráfico de candles do sinal: {e}")
+        return None
 
 
 def montar_mensagem(moeda, direcao, preco, stop, alvo1, alvo2, motivo) -> str:
@@ -372,6 +465,15 @@ def analisar_mercado(moeda: str):
             stop=stop, alvo1=alvo1, alvo2=alvo2, atr=vela["atr"], motivo=motivo,
         )
         log.info(f"[{moeda}] Sinal de {direcao} enviado e registrado com sucesso.")
+
+        caminho_grafico = gerar_grafico_sinal(
+            df, indice_sinal=len(df) - 2, moeda=moeda, direcao=direcao,
+            entrada=preco_fechamento, stop=stop, alvo1=alvo1, alvo2=alvo2,
+            suporte=vela["suporte"], resistencia=vela["resistencia"],
+        )
+        if caminho_grafico:
+            enviar_foto_telegram(caminho_grafico, f"📈 Contexto do sinal: {moeda} ({TIMEFRAME})")
+            Path(caminho_grafico).unlink(missing_ok=True)
 
 
 # =========================================================
