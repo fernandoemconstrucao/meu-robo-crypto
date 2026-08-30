@@ -320,10 +320,25 @@ def analisar_mercado(moeda: str):
         log.info(f"[{moeda}] Sinal de {direcao} já enviado para esta vela, ignorando repetição.")
         return
 
+    sinais_abertos = registro.carregar_sinais()
+
+    # Trava por ativo: nunca emitir um novo sinal enquanto já existir um sinal
+    # em aberto NESSE MESMO ativo (em qualquer direção). Sem isso, o robô pode
+    # emitir vários sinais seguidos no mesmo ativo em poucos minutos enquanto
+    # o mercado ainda está "testando" o rompimento — empilhando exposição no
+    # pior tipo de risco (mesmo ativo = correlação de 100%). Essa também é a
+    # mesma regra que o backtest.py sempre seguiu (nunca simula dois trades
+    # sobrepostos no mesmo ativo) — sem essa trava, o robô ao vivo podia se
+    # comportar de um jeito que o backtest nunca validou.
+    if not sinais_abertos.empty:
+        aberto_neste_ativo = ((sinais_abertos["moeda"] == moeda) & (sinais_abertos["status"] == "ABERTO")).any()
+        if aberto_neste_ativo:
+            log.info(f"[{moeda}] Sinal ignorado: já existe um sinal em aberto para este ativo.")
+            return
+
     # Limite de risco de portfólio: nunca deixar mais que MAX_TRADES_SIMULTANEOS
     # sinais em aberto ao mesmo tempo (somando todos os ativos), pra evitar que
     # uma queda/alta correlacionada do mercado cripto acerte vários de uma vez.
-    sinais_abertos = registro.carregar_sinais()
     qtd_abertos = (sinais_abertos["status"] == "ABERTO").sum() if not sinais_abertos.empty else 0
     if qtd_abertos >= MAX_TRADES_SIMULTANEOS:
         log.info(f"[{moeda}] Sinal ignorado: limite de {MAX_TRADES_SIMULTANEOS} trades "
